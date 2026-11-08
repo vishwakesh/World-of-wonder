@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="WONDER OF WORLD — One World. Countless Wonders. Explore and share breathtaking places around the globe." />
+    <title>WONDER OF WORLD</title>
+    <link rel="preconnect" href="https://images.unsplash.com" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="top-nav">
+      <a href="#home" class="logo">WONDER OF WORLD</a>
+      <button id="menu-toggle" class="menu-toggle" aria-label="Toggle navigation">☰</button>
+      <nav id="main-nav">
+        <a href="#home">Home</a>
+        <a href="#explore">Explore</a>
+        <a href="#map">World Map</a>
+        <a href="#upload">Upload</a>
+        <a href="#community">Community</a>
+        <a href="#profile">Profile</a>
+      </nav>
+      <div id="auth-actions" class="auth-actions"></div>
+    </header>
+
+    <main id="app">
+      <section id="home" class="landing">
+        <div class="landing-overlay">
+          <h1 class="title-stack" aria-label="Wonder Of World">
+            <span>Wonder</span>
+            <span>Of</span>
+            <span>World</span>
+          </h1>
+          <button id="wonder-entry" class="wonder-entry">WONDER THE WORLD</button>
+        </div>
+      </section>
+
+      <section class="feed-section">
+        <h2>Scroll to Discover</h2>
+        <p>Beautiful places shared by people around the world.</p>
+        <div id="feed-grid" class="masonry-grid"></div>
+        <button id="load-more" class="secondary-btn">Load more wonders</button>
+      </section>
+
+      <section id="explore" class="explore-section hidden">
+        <h2>EXPLORE THE WORLD</h2>
+        <p class="subtext">Discover breathtaking places, remarkable architecture, and hidden wonders shared by people around the world.</p>
+        <div id="category-cards" class="category-cards"></div>
+      </section>
+
+      <section id="category-view" class="category-view hidden"></section>
+      <section id="photo-detail" class="photo-detail hidden"></section>
+      <section id="upload" class="panel hidden"></section>
+      <section id="map" class="panel hidden"></section>
+      <section id="community" class="panel hidden"></section>
+      <section id="profile" class="panel hidden"></section>
+    </main>
+
+    <template id="photo-card-template">
+      <article class="photo-card">
+        <button class="photo-click" type="button"></button>
+        <img alt="" loading="lazy" />
+        <div class="meta">
+          <h3></h3>
+          <p class="location"></p>
+          <p class="contributor"></p>
+        </div>
+      </article>
+    </template>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

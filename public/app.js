@@ -1,5 +1,6 @@
 const state = {
   user: null,
+  csrfToken: '',
   feedPage: 1,
   loadingFeed: false,
   currentCategory: null,
@@ -16,9 +17,17 @@ const state = {
 
 const appSections = ['home', 'explore', 'category-view', 'photo-detail', 'upload', 'map', 'community', 'profile'];
 const get = (id) => document.getElementById(id);
+const esc = (value) => String(value ?? '')
+  .replaceAll('&', '&amp;')
+  .replaceAll('<', '&lt;')
+  .replaceAll('>', '&gt;')
+  .replaceAll('"', '&quot;')
+  .replaceAll("'", '&#39;');
 
 async function api(path, options = {}) {
-  const res = await fetch(path, { credentials: 'include', headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }, ...options });
+  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+  if (state.csrfToken) headers['x-csrf-token'] = state.csrfToken;
+  const res = await fetch(path, { credentials: 'include', headers, ...options });
   if (!res.ok) {
     let message = 'Request failed';
     try {
@@ -139,32 +148,44 @@ async function renderCategory(categoryId) {
   const sort = params.get('sort') || 'recent';
   const data = await api(`/api/photos?category=${categoryId}&country=${encodeURIComponent(country)}&city=${encodeURIComponent(city)}&q=${encodeURIComponent(q)}&sort=${sort === 'recent' ? '' : sort}&limit=18`);
 
-  host.innerHTML = `
-    <h2>${found.name}</h2>
-    <p>${found.phrase}</p>
-    <form id="filters" class="filters">
-      <input name="country" placeholder="Country" value="${country}" />
-      <input name="city" placeholder="City or region" value="${city}" />
-      <input name="q" placeholder="Search title/tags" value="${q}" />
-      <select name="sort">
-        <option value="recent" ${sort === 'recent' ? 'selected' : ''}>Recently uploaded</option>
-        <option value="most-liked" ${sort === 'most-liked' ? 'selected' : ''}>Most liked</option>
-        <option value="popular" ${sort === 'popular' ? 'selected' : ''}>Popular destinations</option>
-      </select>
-      <button class="primary-btn" type="submit">Apply</button>
-    </form>
-    <div class="masonry-grid" id="category-grid"></div>
-  `;
+  host.innerHTML = '';
+  const title = document.createElement('h2');
+  title.textContent = found.name;
+  const phrase = document.createElement('p');
+  phrase.textContent = found.phrase;
 
-  host.querySelector('#filters').onsubmit = (e) => {
+  const form = document.createElement('form');
+  form.id = 'filters';
+  form.className = 'filters';
+  form.innerHTML = `
+    <input name="country" placeholder="Country" />
+    <input name="city" placeholder="City or region" />
+    <input name="q" placeholder="Search title/tags" />
+    <select name="sort">
+      <option value="recent">Recently uploaded</option>
+      <option value="most-liked">Most liked</option>
+      <option value="popular">Popular destinations</option>
+    </select>
+    <button class="primary-btn" type="submit">Apply</button>
+  `;
+  form.country.value = country;
+  form.city.value = city;
+  form.q.value = q;
+  form.sort.value = ['recent', 'most-liked', 'popular'].includes(sort) ? sort : 'recent';
+
+  const grid = document.createElement('div');
+  grid.className = 'masonry-grid';
+  grid.id = 'category-grid';
+
+  host.append(title, phrase, form, grid);
+
+  form.onsubmit = (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
     const next = new URLSearchParams(fd);
     history.replaceState(null, '', `${location.pathname}#category/${categoryId}?${next.toString()}`);
     route();
   };
-
-  const grid = host.querySelector('#category-grid');
   data.photos.forEach((photo) => grid.append(photoCard(photo)));
 }
 
@@ -172,12 +193,12 @@ async function renderPhotoDetail(id) {
   const host = get('photo-detail');
   const { photo, comments, related } = await api(`/api/photos/${id}`);
   host.innerHTML = `
-    <img class="hero" src="${photo.image_url}" alt="${photo.title}" />
-    <h2>${photo.title}</h2>
-    <p>${photo.description || ''}</p>
-    <p><strong>Location:</strong> ${photo.city ? `${photo.city}, ` : ''}${photo.country}</p>
-    <p><strong>Category:</strong> ${photo.category.toUpperCase()}</p>
-    <p><strong>Contributor:</strong> <a href="#profile/${photo.username}">@${photo.username}</a></p>
+    <img class="hero" src="${esc(photo.image_url)}" alt="${esc(photo.title)}" />
+    <h2>${esc(photo.title)}</h2>
+    <p>${esc(photo.description || '')}</p>
+    <p><strong>Location:</strong> ${esc(photo.city ? `${photo.city}, ` : '')}${esc(photo.country)}</p>
+    <p><strong>Category:</strong> ${esc(photo.category.toUpperCase())}</p>
+    <p><strong>Contributor:</strong> <a href="#profile/${encodeURIComponent(photo.username)}">@${esc(photo.username)}</a></p>
     <p><strong>Uploaded:</strong> ${new Date(photo.created_at).toLocaleString()}</p>
     <div class="actions">
       <button id="like-btn" class="ghost-btn">${photo.liked ? 'Unlike' : 'Like'} (${photo.likes_count})</button>
@@ -187,7 +208,7 @@ async function renderPhotoDetail(id) {
     </div>
     <h3>Comments</h3>
     ${state.user ? `<form id="comment-form"><textarea name="content" placeholder="Share your thoughts..."></textarea><button class="primary-btn" type="submit">Post comment</button></form>` : '<p>Log in to comment.</p>'}
-    <div class="comments">${comments.map((c) => `<div class="comment"><strong>@${c.username}</strong><p>${c.content}</p></div>`).join('')}</div>
+    <div class="comments">${comments.map((c) => `<div class="comment"><strong>@${esc(c.username)}</strong><p>${esc(c.content)}</p></div>`).join('')}</div>
     <h3>MORE WONDERS TO EXPLORE</h3>
     <div class="masonry-grid" id="related-grid"></div>
   `;
@@ -275,6 +296,7 @@ function renderUploadPanel() {
     const req = new XMLHttpRequest();
     req.open('POST', '/api/photos', true);
     req.withCredentials = true;
+    if (state.csrfToken) req.setRequestHeader('x-csrf-token', state.csrfToken);
     req.upload.onprogress = (ev) => {
       if (ev.lengthComputable) progress.value = Math.round((ev.loaded * 100) / ev.total);
     };
@@ -323,7 +345,7 @@ async function renderCommunity() {
   host.innerHTML = `
     <h2>Community Discovery</h2>
     <p>Wonder of the Day</p>
-    ${wonder.photo ? `<article class="photo-card"><img src="${wonder.photo.image_url}" alt="${wonder.photo.title}"><div class="meta"><h3>${wonder.photo.title}</h3><p>${wonder.photo.country}</p></div></article>` : '<p>No photo yet.</p>'}
+    ${wonder.photo ? `<article class="photo-card"><img src="${esc(wonder.photo.image_url)}" alt="${esc(wonder.photo.title)}"><div class="meta"><h3>${esc(wonder.photo.title)}</h3><p>${esc(wonder.photo.country)}</p></div></article>` : '<p>No photo yet.</p>'}
     <h3>Around the World</h3>
     <div class="masonry-grid" id="around-grid"></div>
   `;
@@ -344,10 +366,10 @@ async function renderProfile(username) {
     const data = await api(`/api/users/${username}`);
     const canFollow = state.user && state.user.username !== username;
     host.innerHTML = `
-      <h2>@${data.user.username}</h2>
-      ${data.user.avatar_url ? `<img src="${data.user.avatar_url}" alt="${data.user.username}" width="72" height="72" style="border-radius:50%"/>` : ''}
-      <p>${data.user.bio || 'No bio yet.'}</p>
-      <p>${data.user.country || 'Location hidden'}</p>
+      <h2>@${esc(data.user.username)}</h2>
+      ${data.user.avatar_url ? `<img src="${esc(data.user.avatar_url)}" alt="${esc(data.user.username)}" width="72" height="72" style="border-radius:50%"/>` : ''}
+      <p>${esc(data.user.bio || 'No bio yet.')}</p>
+      <p>${esc(data.user.country || 'Location hidden')}</p>
       <p>${data.followers} followers • ${data.following} following</p>
       ${canFollow ? `<button class="ghost-btn" id="follow-btn">${data.isFollowing ? 'Unfollow' : 'Follow'}</button>` : ''}
       ${state.user && state.user.username === username ? '<h3>Saved Wonders</h3><div id="saved-grid" class="masonry-grid"></div>' : ''}
@@ -436,6 +458,8 @@ async function route() {
 }
 
 async function init() {
+  const csrf = await api('/api/csrf', { headers: {} });
+  state.csrfToken = csrf.csrfToken || '';
   const data = await api('/api/auth/me');
   state.user = data.user;
   renderAuthActions();

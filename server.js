@@ -1,15 +1,15 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const sqlite3 = require('sqlite3').verbose();
 const multer = require('multer');
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret-in-production';
 const DB_PATH = path.join(__dirname, 'data', 'world.db');
 
 app.use(express.json({ limit: '1mb' }));
@@ -17,6 +17,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use(express.static(path.join(__dirname, 'public')));
+app.use(rateLimit({ windowMs: 15 * 60 * 1000, limit: 300, standardHeaders: true, legacyHeaders: false }));
 
 const db = new sqlite3.Database(DB_PATH);
 
@@ -134,6 +135,12 @@ async function initDb() {
     reason TEXT NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
+  await run(`CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    expires_at DATETIME NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
 
   const existingUsers = await get('SELECT COUNT(*) AS count FROM users');
   if (!existingUsers || existingUsers.count === 0) {
@@ -178,31 +185,56 @@ const upload = multer({
 
 const categories = ['nature', 'cities', 'architecture', 'beaches', 'oceans', 'hidden-gems'];
 
-function makeToken(user) {
-  return jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
+async function getUserFromSession(sessionId) {
+  if (!sessionId) return null;
+  const row = await get(
+    `SELECT u.id, u.username
+     FROM sessions s
+     JOIN users u ON u.id = s.user_id
+     WHERE s.id = ? AND s.expires_at > datetime('now')`,
+    [sessionId]
+  );
+  return row || null;
 }
 
-function authOptional(req, _res, next) {
-  const token = req.cookies.auth;
-  if (!token) return next();
-  try {
-    req.user = jwt.verify(token, JWT_SECRET);
-  } catch (_err) {
-    req.user = null;
-  }
+async function createSession(userId) {
+  const sessionId = crypto.randomBytes(32).toString('hex');
+  await run(
+    `INSERT INTO sessions (id, user_id, expires_at)
+     VALUES (?, ?, datetime('now', '+7 days'))`,
+    [sessionId, userId]
+  );
+  return sessionId;
+}
+
+async function authOptional(req, _res, next) {
+  req.user = await getUserFromSession(req.cookies.auth);
   next();
 }
 
-function authRequired(req, res, next) {
-  const token = req.cookies.auth;
-  if (!token) return res.status(401).json({ error: 'Authentication required' });
-  try {
-    req.user = jwt.verify(token, JWT_SECRET);
-    return next();
-  } catch (_err) {
-    return res.status(401).json({ error: 'Invalid session' });
-  }
+async function authRequired(req, res, next) {
+  const user = await getUserFromSession(req.cookies.auth);
+  if (!user) return res.status(401).json({ error: 'Authentication required' });
+  req.user = user;
+  return next();
 }
+
+function ensureCsrf(req, res, next) {
+  if (!req.cookies.csrf_token) {
+    const token = crypto.randomBytes(24).toString('hex');
+    res.cookie('csrf_token', token, { httpOnly: false, sameSite: 'strict', secure: false });
+    req.cookies.csrf_token = token;
+  }
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+    const headerToken = req.get('x-csrf-token');
+    if (!headerToken || headerToken !== req.cookies.csrf_token) {
+      return res.status(403).json({ error: 'CSRF token validation failed.' });
+    }
+  }
+  return next();
+}
+
+app.use(ensureCsrf);
 
 function normalizePhoto(row) {
   return {
@@ -211,7 +243,15 @@ function normalizePhoto(row) {
   };
 }
 
+function safeDeleteUpload(filename) {
+  if (!filename) return;
+  const uploadDir = path.join(__dirname, 'uploads');
+  const filePath = path.join(uploadDir, path.basename(filename));
+  if (filePath.startsWith(uploadDir) && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+}
+
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
+app.get('/api/csrf', (req, res) => res.json({ csrfToken: req.cookies.csrf_token }));
 
 app.post('/api/auth/register', async (req, res) => {
   try {
@@ -224,9 +264,9 @@ app.post('/api/auth/register', async (req, res) => {
     if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
     const hash = await bcrypt.hash(password, 10);
     const insert = await run('INSERT INTO users (username, password_hash, country) VALUES (?, ?, ?)', [username, hash, country]);
-    const user = { id: insert.lastID, username };
-    res.cookie('auth', makeToken(user), { httpOnly: true, sameSite: 'lax', secure: false });
-    return res.json({ user });
+    const sessionId = await createSession(insert.lastID);
+    res.cookie('auth', sessionId, { httpOnly: true, sameSite: 'strict', secure: false });
+    return res.json({ user: { id: insert.lastID, username } });
   } catch (error) {
     if (String(error.message).includes('UNIQUE')) return res.status(409).json({ error: 'Username already exists.' });
     return res.status(500).json({ error: 'Unable to register.' });
@@ -240,11 +280,15 @@ app.post('/api/auth/login', async (req, res) => {
   if (!user) return res.status(401).json({ error: 'Invalid credentials.' });
   const ok = await bcrypt.compare(password, user.password_hash);
   if (!ok) return res.status(401).json({ error: 'Invalid credentials.' });
-  res.cookie('auth', makeToken(user), { httpOnly: true, sameSite: 'lax', secure: false });
+  const sessionId = await createSession(user.id);
+  res.cookie('auth', sessionId, { httpOnly: true, sameSite: 'strict', secure: false });
   return res.json({ user: { id: user.id, username: user.username } });
 });
 
-app.post('/api/auth/logout', (_req, res) => {
+app.post('/api/auth/logout', async (req, res) => {
+  if (req.cookies.auth) {
+    await run('DELETE FROM sessions WHERE id = ?', [req.cookies.auth]);
+  }
   res.clearCookie('auth');
   res.json({ ok: true });
 });
@@ -371,7 +415,7 @@ app.post('/api/photos', authRequired, upload.single('photo'), async (req, res) =
     const lng = req.body.lng ? Number(req.body.lng) : null;
 
     if (!title || !country || !categories.includes(category)) {
-      fs.unlinkSync(req.file.path);
+      safeDeleteUpload(req.file.filename || req.file.path);
       return res.status(400).json({ error: 'Title, country, and valid category are required.' });
     }
 
@@ -428,8 +472,7 @@ app.delete('/api/photos/:id', authRequired, async (req, res) => {
   }
 
   if (current.image_url.startsWith('/uploads/')) {
-    const filePath = path.join(__dirname, current.image_url);
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    safeDeleteUpload(current.image_url);
   }
 
   await run('DELETE FROM photos WHERE id = ?', [id]);
